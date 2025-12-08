@@ -6,3 +6,7 @@ cd ./opencr_update
 
 # Start robot
 roslaunch turtlebot3_bringup turtlebot3_rplidar.launch
+
+# ArUco markers live view
+python3 scripts/aruco_live_view.py
+# Клавиши: 'q' - выход, 'd' - смена словаря ArUco

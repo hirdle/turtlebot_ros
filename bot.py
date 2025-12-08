@@ -328,19 +328,8 @@ if __name__ == '__main__':
         if not bot.wait_for_hardware():
             sys.exit(0)
         
-        # rospy.loginfo("All sensors ready")
-        # while True:
+        rospy.loginfo("All sensors ready")
         
-            # Пример: получение расстояний
-            # rospy.loginfo("Front: %.2f m" % bot.get_distance_front())
-            # rospy.loginfo("Left: %.2f m" % bot.get_distance_left())
-            # rospy.loginfo("Right: %.2f m" % bot.get_distance_right())
-            # bot.rate.sleep()
-            # bot.wait(0.5)
-        
-        # Пример: движение
-        bot.move_forward(0.05, 0.05)  # 50 см вперед
-        # bot.turn_right(90)            # поворот на 90 градусов влево
             
     except rospy.ROSInterruptException:
         pass
