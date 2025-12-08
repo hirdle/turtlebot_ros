@@ -417,6 +417,83 @@ class BotController:
         return (object_x, object_y, distance, angle_deg)
     
 
+    def get_objects_positions(self, distance_threshold=0.3, min_cluster_size=3, max_distance=3.5):
+        """
+        Получить позиции всех объектов в глобальных координатах
+        
+        Args:
+            distance_threshold: порог разрыва между кластерами (м)
+            min_cluster_size: мин. кол-во точек для объекта
+            max_distance: макс. расстояние до объектов (м)
+        
+        Returns:
+            list of (x, y, distance, angle_deg) для каждого объекта, отсортированный по расстоянию
+        """
+        if not self.scan_data:
+            return []
+        
+        ranges = list(self.scan_data.ranges)
+        angle_increment = math.degrees(self.scan_data.angle_increment)
+        
+        # 1. Фильтрация валидных точек
+        points = []
+        for i, r in enumerate(ranges):
+            if not math.isinf(r) and not math.isnan(r) and 0 < r < max_distance:
+                points.append((i, r))
+        
+        if not points:
+            return []
+        
+        # 2. Кластеризация по разрывам расстояний
+        clusters = []
+        current_cluster = [points[0]]
+        
+        for i in range(1, len(points)):
+            prev_idx, prev_r = points[i-1]
+            curr_idx, curr_r = points[i]
+            
+            # Разрыв по индексу или расстоянию
+            idx_gap = (curr_idx - prev_idx) > 5
+            dist_gap = abs(curr_r - prev_r) > distance_threshold
+            
+            if idx_gap or dist_gap:
+                if len(current_cluster) >= min_cluster_size:
+                    clusters.append(current_cluster)
+                current_cluster = []
+            
+            current_cluster.append((curr_idx, curr_r))
+        
+        # Добавить последний кластер
+        if len(current_cluster) >= min_cluster_size:
+            clusters.append(current_cluster)
+        
+        # 3. Вычисление позиций объектов
+        robot_x, robot_y = self.get_position()
+        robot_yaw = self.get_yaw()
+        objects = []
+        
+        for cluster in clusters:
+            # Центр кластера - минимальное расстояние
+            min_point = min(cluster, key=lambda p: p[1])
+            center_idx, min_dist = min_point
+            
+            angle_deg = center_idx * angle_increment
+            if angle_deg > 180:
+                angle_deg -= 360
+            
+            # Глобальные координаты
+            object_angle_global = robot_yaw + math.radians(angle_deg)
+            object_x = robot_x + min_dist * math.cos(object_angle_global)
+            object_y = robot_y + min_dist * math.sin(object_angle_global)
+            
+            objects.append((object_x, object_y, min_dist, angle_deg))
+        
+        # Сортировка по расстоянию
+        objects.sort(key=lambda obj: obj[2])
+        
+        return objects
+    
+
     def get_object_width(self, distance_threshold=0.3):
         """
         Определение ширины ближайшего объекта
@@ -487,6 +564,183 @@ class BotController:
         
         return (width, angle_start, angle_end, min_distance)
     
+
+    def _get_averaged_distance(self, center_angle, spread):
+        """
+        Получить усреднённое расстояние в секторе
+        center_angle: центральный угол (градусы)
+        spread: ширина сектора в градусах (+-spread/2)
+        """
+        if not self.scan_data:
+            return float('inf')
+        
+        distances = []
+        for angle in range(int(center_angle - spread // 2), int(center_angle + spread // 2 + 1)):
+            d = self.get_distance_at_angle(angle)
+            if not math.isinf(d) and not math.isnan(d) and d > 0:
+                distances.append(d)
+        
+        if distances:
+            return sum(distances) / len(distances)
+        return float('inf')
+
+
+    # ==================== OBSTACLE AVOIDANCE ====================
+
+    def avoid_obstacle(self, target_distance=0.3, side='right', speed=0.08, extra_distance=0.15):
+        """
+        Объезд препятствия с поддержанием заданного расстояния
+        target_distance: желаемое расстояние до препятствия при объезде (м)
+        side: 'left' или 'right' - с какой стороны объезжать
+        speed: скорость движения (м/с)
+        extra_distance: дополнительное расстояние после конца препятствия (м)
+        """
+        rospy.loginfo("Starting obstacle avoidance, side=%s, distance=%.2f" % (side, target_distance))
+        
+        # PD-регулятор параметры
+        kp = 2.0  # пропорциональный коэффициент
+        kd = 0.5  # дифференциальный коэффициент
+        prev_error = 0.0
+        
+        # Определяем направление поворота и функцию измерения расстояния
+        if side == 'right':
+            turn_angle = -90
+            get_side_distance = self.get_distance_left
+        else:
+            turn_angle = 90
+            get_side_distance = self.get_distance_right
+        
+        # 1. Поворот на 90° в сторону объезда
+        self.turn(turn_angle)
+        rospy.sleep(0.2)
+        
+        # 2. Движение вдоль препятствия с PD-регулятором
+        obstacle_ended = False
+        end_counter = 0
+        end_threshold = 10  # количество итераций для подтверждения конца препятствия
+        
+        twist = Twist()
+        
+        while not rospy.is_shutdown():
+            side_distance = get_side_distance()
+            front_distance = self.get_distance_front()
+            
+            # Проверка на конец препятствия (расстояние сбоку резко увеличилось)
+            if side_distance > target_distance * 2.5:
+                end_counter += 1
+                if end_counter >= end_threshold:
+                    obstacle_ended = True
+                    rospy.loginfo("Obstacle end detected")
+                    break
+            else:
+                end_counter = 0
+            
+            # Если впереди препятствие - остановка и поворот
+            if front_distance < target_distance:
+                self.stop()
+                self.turn(turn_angle)
+                rospy.sleep(0.2)
+                continue
+            
+            # PD-регулятор для поддержания дистанции
+            error = target_distance - side_distance
+            derivative = error - prev_error
+            correction = kp * error + kd * derivative
+            prev_error = error
+            
+            # Ограничение коррекции
+            max_correction = 0.3
+            correction = max(-max_correction, min(max_correction, correction))
+            
+            # Применение скоростей
+            twist.linear.x = speed
+            if side == 'right':
+                twist.angular.z = -correction  # отрицательная коррекция для правой стороны
+            else:
+                twist.angular.z = correction
+            
+            self.cmd_vel_pub.publish(twist)
+            self.rate.sleep()
+        
+        # 3. Проехать немного вперёд после конца препятствия
+        if obstacle_ended:
+            self.move_forward(extra_distance, speed)
+            
+            # 4. Повернуть обратно к исходному направлению
+            self.turn(-turn_angle)
+            rospy.loginfo("Obstacle avoidance completed")
+        
+        self.stop()
+        return obstacle_ended
+
+
+    def follow_wall(self, target_distance=0.3, side='right', speed=0.08, duration=None, stop_condition=None):
+        """
+        Следование вдоль стены на заданном расстоянии
+        target_distance: желаемое расстояние до стены (м)
+        side: 'left' или 'right' - с какой стороны стена
+        speed: скорость движения (м/с)
+        duration: время следования в секундах (None = бесконечно)
+        stop_condition: функция условия остановки (опционально)
+        """
+        rospy.loginfo("Starting wall following, side=%s, distance=%.2f" % (side, target_distance))
+        
+        kp = 2.0
+        kd = 0.5
+        prev_error = 0.0
+        
+        if side == 'right':
+            get_side_distance = self.get_distance_right
+        else:
+            get_side_distance = self.get_distance_left
+        
+        start_time = rospy.Time.now()
+        twist = Twist()
+        
+        while not rospy.is_shutdown():
+            # Проверка времени
+            if duration is not None:
+                elapsed = (rospy.Time.now() - start_time).to_sec()
+                if elapsed >= duration:
+                    break
+            
+            # Проверка условия остановки
+            if stop_condition is not None and stop_condition():
+                break
+            
+            side_distance = get_side_distance()
+            front_distance = self.get_distance_front()
+            
+            # Если впереди препятствие
+            if front_distance < target_distance * 1.5:
+                self.stop()
+                if side == 'right':
+                    self.turn_left(90)
+                else:
+                    self.turn_right(90)
+                continue
+            
+            # PD-регулятор
+            error = target_distance - side_distance
+            derivative = error - prev_error
+            correction = kp * error + kd * derivative
+            prev_error = error
+            
+            max_correction = 0.3
+            correction = max(-max_correction, min(max_correction, correction))
+            
+            twist.linear.x = speed
+            if side == 'right':
+                twist.angular.z = correction
+            else:
+                twist.angular.z = -correction
+            
+            self.cmd_vel_pub.publish(twist)
+            self.rate.sleep()
+        
+        self.stop()
+        return True
+
 
     # ==================== IMU / ODOMETRY ====================
     
