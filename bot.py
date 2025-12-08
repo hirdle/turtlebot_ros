@@ -194,13 +194,110 @@ class BotController:
         return self.turn(-abs(angle_deg), speed)
     
 
-    def set_velocity(self, linear=0.0, angular=0.0):
-        """Установка произвольной скорости"""
+    def move_speed(self, left_speed, right_speed, wheel_base=0.287):
+        """
+        Движение с заданными скоростями для каждого мотора (м/с)
+        left_speed: скорость левого мотора (+ вперед, - назад)
+        right_speed: скорость правого мотора (+ вперед, - назад)
+        wheel_base: расстояние между колесами (м), для TurtleBot3 Waffle Pi = 0.287
+        """
+        linear = (right_speed + left_speed) / 2.0
+        angular = (right_speed - left_speed) / wheel_base
+        
         twist = Twist()
         twist.linear.x = linear
         twist.angular.z = angular
         self.cmd_vel_pub.publish(twist)
     
+
+    def move_circle(self, radius, speed=0.1, clockwise=False):
+        """
+        Движение по окружности заданного радиуса (непрерывно)
+        radius: радиус окружности (м)
+        speed: линейная скорость (м/с)
+        clockwise: True - по часовой, False - против часовой
+        """
+        angular = speed / radius
+        if clockwise:
+            angular = -angular
+        
+        twist = Twist()
+        twist.linear.x = speed
+        twist.angular.z = angular
+        self.cmd_vel_pub.publish(twist)
+    
+
+    def move_circle_arc(self, radius, angle_deg, speed=0.1, clockwise=False):
+        """
+        Движение по дуге окружности на заданный угол
+        radius: радиус окружности (м)
+        angle_deg: угол дуги (градусы)
+        speed: линейная скорость (м/с)
+        clockwise: True - по часовой, False - против часовой
+        """
+        arc_length = radius * math.radians(abs(angle_deg))
+        angular = speed / radius
+        if clockwise:
+            angular = -angular
+        
+        
+        start_x = self.odom_data.pose.pose.position.x
+        start_y = self.odom_data.pose.pose.position.y
+        
+        twist = Twist()
+        twist.linear.x = speed
+        twist.angular.z = angular
+        
+        while not rospy.is_shutdown():
+            current_x = self.odom_data.pose.pose.position.x
+            current_y = self.odom_data.pose.pose.position.y
+            traveled = math.sqrt((current_x - start_x)**2 + (current_y - start_y)**2)
+            
+            if traveled >= arc_length * 0.9:
+                break
+            
+            self.cmd_vel_pub.publish(twist)
+            self.rate.sleep()
+        
+        self.stop()
+        return True
+
+
+    def move_by_condition(self, linear_speed, angular_speed, condition_func):
+        """
+        Движение с заданными скоростями до выполнения условия
+        linear_speed: линейная скорость (м/с)
+        angular_speed: угловая скорость (рад/с)
+        condition_func: функция, возвращающая True для остановки
+        """
+        twist = Twist()
+        twist.linear.x = linear_speed
+        twist.angular.z = angular_speed
+        
+        while not rospy.is_shutdown():
+            if condition_func():
+                break
+            self.cmd_vel_pub.publish(twist)
+            self.rate.sleep()
+        
+        self.stop()
+    
+
+    def move_motors_by_condition(self, left_speed, right_speed, condition_func):
+        """
+        Движение с заданными скоростями до выполнения условия
+        linear_speed: линейная скорость (м/с)
+        angular_speed: угловая скорость (рад/с)
+        condition_func: функция, возвращающая True для остановки
+        """
+
+        while not rospy.is_shutdown():
+            if condition_func():
+                break
+            self.move_speed(left_speed, right_speed)
+            self.rate.sleep()
+        
+        self.stop()
 
     # ==================== LIDAR ====================
     
@@ -251,24 +348,6 @@ class BotController:
         return self._get_averaged_distance(180, 10)
     
 
-    def _get_averaged_distance(self, center_angle, spread):
-        """Усредненное расстояние в секторе"""
-        if not self.scan_data:
-            return float('inf')
-
-        center_angle = abs(center_angle + 180) - 360
-
-        distances = []
-        for angle in range(center_angle - spread, center_angle + spread + 1):
-            d = self.get_distance_at_angle(angle)
-            if not math.isinf(d):
-                distances.append(d)
-        
-        if distances:
-            return sum(distances) / len(distances)
-        return float('inf')
-    
-
     def get_min_distance(self):
         """Минимальное расстояние до препятствия"""
         if not self.scan_data:
@@ -282,19 +361,131 @@ class BotController:
         return float('inf')
     
 
-    def get_min_distance_in_sector(self, start_angle, end_angle):
-        """Минимальное расстояние в секторе (градусы)"""
+    def get_object_angle_distance(self):
+        """
+        Определение угла и расстояния до ближайшего объекта
+        Возвращает: (angle_deg, distance) - угол в градусах и расстояние в метрах
+        angle_deg: 0 - спереди, 90 - слева, -90/270 - справа, 180 - сзади
+        """
         if not self.scan_data:
-            return float('inf')
+            return (None, float('inf'))
         
-        min_dist = float('inf')
-        angle = start_angle
-        while angle <= end_angle:
-            d = self.get_distance_at_angle(angle)
-            if d < min_dist:
-                min_dist = d
-            angle += 1
-        return min_dist
+        ranges = self.scan_data.ranges
+        min_distance = float('inf')
+        min_index = 0
+        
+        for i, r in enumerate(ranges):
+            if not math.isinf(r) and not math.isnan(r) and r > 0:
+                if r < min_distance:
+                    min_distance = r
+                    min_index = i
+        
+        if min_distance == float('inf'):
+            return (None, float('inf'))
+        
+        angle_increment = math.degrees(self.scan_data.angle_increment)
+        angle_deg = min_index * angle_increment
+        
+        # Нормализация угла: 0-180 слева, 180-360 -> -180 до 0 справа
+        if angle_deg > 180:
+            angle_deg = angle_deg - 360
+        
+        return (angle_deg, min_distance)
+    
+
+    def get_object_position(self):
+        """
+        Получить позицию ближайшего объекта в глобальных координатах
+        Возвращает: (x, y, distance, angle_deg) или (None, None, None, None) если объект не найден
+        """
+        angle_deg, distance = self.get_object_angle_distance()
+        
+        if angle_deg is None:
+            return (None, None, None, None)
+        
+        # Позиция робота
+        robot_x, robot_y = self.get_position()
+        robot_yaw = self.get_yaw()
+        
+        # Угол объекта в глобальной системе координат
+        object_angle_global = robot_yaw + math.radians(angle_deg)
+        
+        # Позиция объекта
+        object_x = robot_x + distance * math.cos(object_angle_global)
+        object_y = robot_y + distance * math.sin(object_angle_global)
+        
+        return (object_x, object_y, distance, angle_deg)
+    
+
+    def get_object_width(self, distance_threshold=0.3):
+        """
+        Определение ширины ближайшего объекта
+        distance_threshold: порог разницы расстояний для определения границ объекта (м)
+        Возвращает: (width, angle_start, angle_end, distance) или (None, None, None, None)
+        width - ширина объекта в метрах
+        """
+        if not self.scan_data:
+            return (None, None, None, None)
+        
+        ranges = list(self.scan_data.ranges)
+        angle_increment = math.degrees(self.scan_data.angle_increment)
+        
+        # Найти индекс ближайшего объекта
+        min_distance = float('inf')
+        min_index = 0
+        for i, r in enumerate(ranges):
+            if not math.isinf(r) and not math.isnan(r) and r > 0:
+                if r < min_distance:
+                    min_distance = r
+                    min_index = i
+        
+        if min_distance == float('inf'):
+            return (None, None, None, None)
+        
+        # Найти границы объекта (где расстояние резко увеличивается)
+        num_readings = len(ranges)
+        
+        # Поиск левой границы
+        left_index = min_index
+        for i in range(1, num_readings // 2):
+            idx = (min_index + i) % num_readings
+            r = ranges[idx]
+            if math.isinf(r) or math.isnan(r) or r <= 0:
+                break
+            if r - min_distance > distance_threshold:
+                break
+            left_index = idx
+        
+        # Поиск правой границы
+        right_index = min_index
+        for i in range(1, num_readings // 2):
+            idx = (min_index - i) % num_readings
+            r = ranges[idx]
+            if math.isinf(r) or math.isnan(r) or r <= 0:
+                break
+            if r - min_distance > distance_threshold:
+                break
+            right_index = idx
+        
+        # Вычисление угловой ширины
+        if left_index >= right_index:
+            angle_span = (left_index - right_index) * angle_increment
+        else:
+            angle_span = (num_readings - right_index + left_index) * angle_increment
+        
+        # Вычисление ширины объекта (хорда)
+        angle_span_rad = math.radians(angle_span)
+        width = 2 * min_distance * math.sin(angle_span_rad / 2)
+        
+        # Углы границ
+        angle_start = right_index * angle_increment
+        angle_end = left_index * angle_increment
+        if angle_start > 180:
+            angle_start -= 360
+        if angle_end > 180:
+            angle_end -= 360
+        
+        return (width, angle_start, angle_end, min_distance)
     
 
     # ==================== IMU / ODOMETRY ====================
@@ -308,6 +499,21 @@ class BotController:
         quaternion = (orientation.x, orientation.y, orientation.z, orientation.w)
         euler = tf.transformations.euler_from_quaternion(quaternion)
         return euler[2]  # yaw
+    
+
+    def get_yaw_degrees(self):
+        """Получить текущий угол поворота в градусах"""
+        return math.degrees(self.get_yaw())
+    
+
+    def get_position(self):
+        """Получить текущую позицию (x, y) относительно начальной точки"""
+        if not self.odom_data:
+            return (0.0, 0.0)
+        
+        x = self.odom_data.pose.pose.position.x - self.start_x
+        y = self.odom_data.pose.pose.position.y - self.start_y
+        return (x, y)
     
     # ==================== UTILITIES ====================
     
