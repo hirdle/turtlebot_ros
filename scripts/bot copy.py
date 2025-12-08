@@ -8,8 +8,6 @@ from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan, Imu, Image
 from nav_msgs.msg import Odometry
 
-import sys
-
 import cv2
 import numpy as np
 from cv_bridge import CvBridge, CvBridgeError
@@ -46,42 +44,6 @@ class BotController:
         rospy.Subscriber('/front_camera/image_raw', Image, self._image_callback)
         
         self.rate = rospy.Rate(10)
-        
-        rospy.on_shutdown(self._shutdown_callback)
-
-    
-    def _shutdown_callback(self):
-        """Вызывается при завершении программы (Ctrl+C)"""
-        rospy.loginfo("Shutting down, stopping robot...")
-        self.stop()
-
-    
-    def wait_for_hardware(self, timeout=10.0):
-        """Ожидание инициализации всего оборудования"""
-        rospy.loginfo("Waiting for hardware initialization...")
-        start_time = rospy.Time.now()
-        
-        while not rospy.is_shutdown():
-            elapsed = (rospy.Time.now() - start_time).to_sec()
-            if elapsed > timeout:
-                rospy.logwarn("Hardware initialization timeout (%.1f sec)" % timeout)
-                return False
-            
-            # Проверка всех сенсоров
-            scan_ok = self.scan_data is not None
-            imu_ok = self.imu_data is not None
-            odom_ok = self.odom_data is not None
-            camera_ok = self.current_frame is not None
-            
-            if scan_ok and imu_ok and odom_ok and camera_ok:
-                rospy.loginfo("All hardware initialized (scan=%s, imu=%s, odom=%s, camera=%s)" 
-                             % (scan_ok, imu_ok, odom_ok, camera_ok))
-                return True
-            
-            rospy.sleep(0.1)
-        
-        return False
-
     
     def wait(self, sec):
         rospy.sleep(sec)
@@ -102,11 +64,20 @@ class BotController:
             self.current_frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         except CvBridgeError as e:
             rospy.logerr("CvBridge Error: %s" % e)
-
-    def get_image(self):
-        if self.current_frame is None:
-            return None
-        return self.current_frame.copy()
+    
+    # ==================== SENSOR WAITING ====================
+    
+    def wait_for_sensors(self, timeout=5.0):
+        """Ожидание готовности всех сенсоров"""
+        start_time = rospy.Time.now()
+        while not rospy.is_shutdown():
+            if self.scan_data and self.imu_data and self.odom_data:
+                return True
+            if (rospy.Time.now() - start_time).to_sec() > timeout:
+                rospy.logwarn("Timeout waiting for sensors")
+                return False
+            self.rate.sleep()
+        return False
     
     # ==================== MOVEMENT ====================
     
@@ -115,17 +86,14 @@ class BotController:
         twist = Twist()
         self.cmd_vel_pub.publish(twist)
     
-
     def move_forward(self, distance, speed=0.08):
         """Движение вперед на заданное расстояние (м)"""
         self._move_linear(distance, abs(speed))
     
-
     def move_backward(self, distance, speed=0.08):
         """Движение назад на заданное расстояние (м)"""
         self._move_linear(distance, -abs(speed))
     
-
     def _move_linear(self, distance, speed):
         """Линейное движение по одометрии"""
         if not self.odom_data:
@@ -152,8 +120,7 @@ class BotController:
         self.stop()
         return True
     
-
-    def turn(self, angle_deg, speed=0.2):
+    def turn(self, angle_deg, speed=0.5):
         """
         Поворот на заданный угол (градусы)
         Положительный угол - против часовой (влево)
@@ -183,17 +150,14 @@ class BotController:
         self.stop()
         return True
     
-    
     def turn_left(self, angle_deg, speed=0.2):
         """Поворот влево на угол (градусы)"""
         return self.turn(abs(angle_deg), speed)
     
-
     def turn_right(self, angle_deg, speed=0.2):
         """Поворот вправо на угол (градусы)"""
         return self.turn(-abs(angle_deg), speed)
     
-
     def set_velocity(self, linear=0.0, angular=0.0):
         """Установка произвольной скорости"""
         twist = Twist()
@@ -201,7 +165,6 @@ class BotController:
         twist.angular.z = angular
         self.cmd_vel_pub.publish(twist)
     
-
     # ==================== LIDAR ====================
     
     def get_scan_ranges(self):
@@ -210,6 +173,18 @@ class BotController:
             return []
         return list(self.scan_data.ranges)
     
+    def get_scan_data(self):
+        """Получить полные данные сканирования (ranges, angle_min, angle_max, angle_increment)"""
+        if not self.scan_data:
+            return None
+        return {
+            'ranges': list(self.scan_data.ranges),
+            'angle_min': self.scan_data.angle_min,
+            'angle_max': self.scan_data.angle_max,
+            'angle_increment': self.scan_data.angle_increment,
+            'range_min': self.scan_data.range_min,
+            'range_max': self.scan_data.range_max
+        }
     
     def get_distance_at_angle(self, angle_deg):
         """
@@ -230,27 +205,22 @@ class BotController:
             return float('inf')
         return distance
     
-
     def get_distance_front(self):
         """Расстояние спереди (0 градусов)"""
         return self._get_averaged_distance(0, 10)
     
-
     def get_distance_left(self):
         """Расстояние слева (90 градусов)"""
         return self._get_averaged_distance(90, 10)
     
-
     def get_distance_right(self):
         """Расстояние справа (270 градусов)"""
         return self._get_averaged_distance(270, 10)
     
-
     def get_distance_back(self):
         """Расстояние сзади (180 градусов)"""
         return self._get_averaged_distance(180, 10)
     
-
     def _get_averaged_distance(self, center_angle, spread):
         """Усредненное расстояние в секторе"""
         if not self.scan_data:
@@ -268,7 +238,6 @@ class BotController:
             return sum(distances) / len(distances)
         return float('inf')
     
-
     def get_min_distance(self):
         """Минимальное расстояние до препятствия"""
         if not self.scan_data:
@@ -281,7 +250,6 @@ class BotController:
             return min(valid_ranges)
         return float('inf')
     
-
     def get_min_distance_in_sector(self, start_angle, end_angle):
         """Минимальное расстояние в секторе (градусы)"""
         if not self.scan_data:
@@ -296,7 +264,6 @@ class BotController:
             angle += 1
         return min_dist
     
-
     # ==================== IMU / ODOMETRY ====================
     
     def get_yaw(self):
@@ -309,6 +276,53 @@ class BotController:
         euler = tf.transformations.euler_from_quaternion(quaternion)
         return euler[2]  # yaw
     
+    def get_yaw_degrees(self):
+        """Получить текущий угол поворота в градусах"""
+        return math.degrees(self.get_yaw())
+    
+    def get_position(self):
+        """Получить текущую позицию (x, y) относительно начальной точки"""
+        if not self.odom_data:
+            return (0.0, 0.0)
+        
+        x = self.odom_data.pose.pose.position.x - self.start_x
+        y = self.odom_data.pose.pose.position.y - self.start_y
+        return (x, y)
+    
+    def get_absolute_position(self):
+        """Получить абсолютную позицию (x, y) по одометрии"""
+        if not self.odom_data:
+            return (0.0, 0.0)
+        
+        x = self.odom_data.pose.pose.position.x
+        y = self.odom_data.pose.pose.position.y
+        return (x, y)
+    
+    def reset_odom(self):
+        """Сброс начальной позиции (текущая станет нулевой)"""
+        if self.odom_data:
+            self.start_x = self.odom_data.pose.pose.position.x
+            self.start_y = self.odom_data.pose.pose.position.y
+            self.start_yaw = self.get_yaw()
+    
+    def get_imu_angular_velocity(self):
+        """Получить угловую скорость из IMU"""
+        if not self.imu_data:
+            return (0.0, 0.0, 0.0)
+        
+        return (self.imu_data.angular_velocity.x,
+                self.imu_data.angular_velocity.y,
+                self.imu_data.angular_velocity.z)
+    
+    def get_imu_linear_acceleration(self):
+        """Получить линейное ускорение из IMU"""
+        if not self.imu_data:
+            return (0.0, 0.0, 0.0)
+        
+        return (self.imu_data.linear_acceleration.x,
+                self.imu_data.linear_acceleration.y,
+                self.imu_data.linear_acceleration.z)
+    
     # ==================== UTILITIES ====================
     
     def _normalize_angle(self, angle):
@@ -319,28 +333,37 @@ class BotController:
             angle += 2 * math.pi
         return angle
     
+    def distance_to_point(self, x, y):
+        """Расстояние до точки от текущей позиции"""
+        pos = self.get_position()
+        return math.sqrt((x - pos[0])**2 + (y - pos[1])**2)
+    
+    def angle_to_point(self, x, y):
+        """Угол до точки от текущей позиции (градусы)"""
+        pos = self.get_position()
+        return math.degrees(math.atan2(y - pos[1], x - pos[0]))
+
 
 # Пример использования
 if __name__ == '__main__':
     try:
         bot = BotController()
         rospy.loginfo("BotController initialized")
-        if not bot.wait_for_hardware():
-            sys.exit(0)
         
-        # rospy.loginfo("All sensors ready")
-        # while True:
-        
-            # Пример: получение расстояний
-            # rospy.loginfo("Front: %.2f m" % bot.get_distance_front())
-            # rospy.loginfo("Left: %.2f m" % bot.get_distance_left())
-            # rospy.loginfo("Right: %.2f m" % bot.get_distance_right())
-            # bot.rate.sleep()
-            # bot.wait(0.5)
-        
-        # Пример: движение
-        bot.move_forward(0.05, 0.05)  # 50 см вперед
-        # bot.turn_right(90)            # поворот на 90 градусов влево
+        if bot.wait_for_sensors():
+            # rospy.loginfo("All sensors ready")
+            # while True:
+            
+                # Пример: получение расстояний
+                # rospy.loginfo("Front: %.2f m" % bot.get_distance_front())
+                # rospy.loginfo("Left: %.2f m" % bot.get_distance_left())
+                # rospy.loginfo("Right: %.2f m" % bot.get_distance_right())
+                # bot.rate.sleep()
+                # bot.wait(0.5)
+            
+            # Пример: движение
+            bot.move_forward(0.05, 0.05)  # 50 см вперед
+            # bot.turn_right(90)            # поворот на 90 градусов влево
             
     except rospy.ROSInterruptException:
         pass

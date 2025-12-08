@@ -5,8 +5,6 @@ import cv2
 import numpy as np
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
-import time
-import main_matching
 
 
 class BotCameraController:
@@ -21,7 +19,7 @@ class BotCameraController:
         
         rospy.Subscriber('/front_camera/image_raw', Image, self._image_callback)
         
-        self.rate = rospy.Rate(30)
+        self.rate = rospy.Rate(10)
     
     # ==================== CALLBACKS ====================
     
@@ -261,6 +259,13 @@ if __name__ == '__main__':
         
         if cam.wait_for_camera():
             rospy.loginfo("Camera ready")
+            while True:
+                image = cam.get_image()
+                if image is not None:
+                    cv2.imshow("Camera Frame", image)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                cam.rate.sleep()
 
             
             
