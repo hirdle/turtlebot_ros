@@ -11,7 +11,7 @@ import os
 # === HSV ДИАПАЗОНЫ ЦВЕТОВ ===
 COLORS = {
     'blue': ((100, 100, 100), (130, 255, 255)),
-    'green': ((40, 90, 70), (80, 255, 255)),
+    'green': ((40, 30, 30), (80, 255, 255)),
     'yellow': ((20, 100, 100), (40, 255, 255)),
     'red': None,  # особый случай - два диапазона
 }
@@ -72,7 +72,7 @@ def _crop_roi(img, contour, pad=20, size=300):
 
 def detect_aruco(frame):
     """
-    Детекция ArUco маркеров 7x7.
+    Детекция ArUco маркеров 7x7 с пониженной чувствительностью для низкого разрешения.
     
     Returns: [(marker_id, corners, area), ...]
     """
@@ -80,7 +80,11 @@ def detect_aruco(frame):
         return []
     
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_7X7_50)
-    detector = cv2.aruco.ArucoDetector(aruco_dict, cv2.aruco.DetectorParameters())
+    params = cv2.aruco.DetectorParameters()
+    params.minMarkerPerimeterRate = 0.03  # поиграйсь с 0.02–0.05
+    params.maxMarkerPerimeterRate = 100.0   # обычно ок
+
+    detector = cv2.aruco.ArucoDetector(aruco_dict, params)
     corners, ids, _ = detector.detectMarkers(frame)
     
     result = []
@@ -91,7 +95,7 @@ def detect_aruco(frame):
     return result
 
 
-def detect_sign(frame, template_paths, color='auto', threshold=0.7):
+def detect_sign(frame, template_paths, color='auto', threshold=0.45):
     """
     Детекция и матчинг знака с шаблонами.
     
@@ -118,7 +122,7 @@ def detect_sign(frame, template_paths, color='auto', threshold=0.7):
     if roi is None:
         return (False, 0.0, None)
     
-    roi_gray = cv2.GaussianBlur(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+    roi_gray = cv2.GaussianBlur(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), (9, 9), 0)
     
     best_conf, best_name = 0.0, None
     for path in template_paths:
@@ -148,7 +152,7 @@ def detect_sign(frame, template_paths, color='auto', threshold=0.7):
     return (best_conf >= threshold, best_conf, best_name)
 
 
-def detect_traffic_light(frame):
+def detect_traffic_light(frame, min_area=5000):
     """
     Детекция цветов светофора.
     
@@ -160,7 +164,7 @@ def detect_traffic_light(frame):
     result = []
     for color in COLORS:
         mask = _get_mask(frame, color)
-        contour = _find_contour(mask)
+        contour = _find_contour(mask, min_area=min_area)
         if contour is not None:
             result.append((color, contour, cv2.contourArea(contour)))
     

@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Тест функции detect_traffic_light с видеопотоком камеры
+Тест функции detect_traffic_light с видеопотоком ROS камеры
 Клавиши: 'q' - выход
 """
 
+import rospy
 import cv2
+from bot import BotController
 from matching import detect_traffic_light
 
 COLOR_BGR = {
@@ -17,19 +19,23 @@ COLOR_BGR = {
 
 
 def main():
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Ошибка: не удалось открыть камеру")
+    bot = BotController(node_name='test_traffic_light_camera')
+    rospy.loginfo("Waiting for camera...")
+    
+    if not bot.wait_for_hardware(timeout=10.0):
+        rospy.logerr("Failed to initialize camera")
         return
 
-    print("Запущен тест detect_traffic_light. Нажмите 'q' для выхода.")
+    rospy.loginfo("Camera ready. Press 'q' to exit.")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    while not rospy.is_shutdown():
+        frame = bot.get_image()
+        if frame is None:
+            rospy.sleep(0.1)
+            continue
 
         lights = detect_traffic_light(frame)
+        print(f"Detected lights: {[i[0] for i in lights]}")
 
         for i, (color, contour, area) in enumerate(lights):
             bgr = COLOR_BGR.get(color, (255, 255, 255))
@@ -48,9 +54,11 @@ def main():
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    cap.release()
     cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except rospy.ROSInterruptException:
+        pass

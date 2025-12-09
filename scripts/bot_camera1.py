@@ -6,7 +6,7 @@ import numpy as np
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
 
-from matching_object import detect_and_match
+from matching.matching_object import detect_and_match
 
 
 class BotCameraController:

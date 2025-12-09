@@ -1,26 +1,31 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Тест функции detect_aruco с видеопотоком камеры
+Тест функции detect_aruco с видеопотоком ROS камеры
 Клавиши: 'q' - выход
 """
 
+import rospy
 import cv2
+from bot import BotController
 from matching import detect_aruco
 
 
 def main():
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Ошибка: не удалось открыть камеру")
+    bot = BotController(node_name='test_aruco_camera')
+    rospy.loginfo("Waiting for camera...")
+    
+    if not bot.wait_for_hardware(timeout=10.0):
+        rospy.logerr("Failed to initialize camera")
         return
 
-    print("Запущен тест detect_aruco. Нажмите 'q' для выхода.")
+    rospy.loginfo("Camera ready. Press 'q' to exit.")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    while not rospy.is_shutdown():
+        frame = bot.get_image()
+        if frame is None:
+            rospy.sleep(0.1)
+            continue
 
         markers = detect_aruco(frame)
 
@@ -38,9 +43,11 @@ def main():
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    cap.release()
     cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except rospy.ROSInterruptException:
+        pass

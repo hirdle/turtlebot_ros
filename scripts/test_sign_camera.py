@@ -1,41 +1,46 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Тест функции detect_sign с видеопотоком камеры
+Тест функции detect_sign с видеопотоком ROS камеры
 Клавиши: 'q' - выход, '1'-'4' - выбор цвета (blue/red/green/yellow), 'a' - auto
 """
 
+import rospy
 import cv2
 import glob
 import os
+from bot import BotController
 from matching import detect_sign
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "template")
 
 
 def main():
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Ошибка: не удалось открыть камеру")
+    bot = BotController(node_name='test_sign_camera')
+    rospy.loginfo("Waiting for camera...")
+    
+    if not bot.wait_for_hardware(timeout=10.0):
+        rospy.logerr("Failed to initialize camera")
         return
 
     templates = glob.glob(os.path.join(TEMPLATE_DIR, "*.png"))
     templates += glob.glob(os.path.join(TEMPLATE_DIR, "*.jpg"))
 
     if not templates:
-        print(f"Предупреждение: шаблоны не найдены в {TEMPLATE_DIR}")
+        rospy.logwarn(f"No templates found in {TEMPLATE_DIR}")
 
     color_mode = 'auto'
     color_keys = {'1': 'blue', '2': 'red', '3': 'green', '4': 'yellow', 'a': 'auto'}
 
-    print("Запущен тест detect_sign. Нажмите 'q' для выхода.")
-    print(f"Найдено шаблонов: {len(templates)}")
-    print("Клавиши: 1=blue, 2=red, 3=green, 4=yellow, a=auto")
+    rospy.loginfo("Camera ready. Press 'q' to exit.")
+    rospy.loginfo(f"Templates found: {len(templates)}")
+    rospy.loginfo("Keys: 1=blue, 2=red, 3=green, 4=yellow, a=auto")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    while not rospy.is_shutdown():
+        frame = bot.get_image()
+        if frame is None:
+            rospy.sleep(0.1)
+            continue
 
         is_match, confidence, template_name = detect_sign(frame, templates, color=color_mode)
 
@@ -51,11 +56,13 @@ def main():
             break
         elif chr(key) in color_keys:
             color_mode = color_keys[chr(key)]
-            print(f"Режим цвета: {color_mode}")
+            rospy.loginfo(f"Color mode: {color_mode}")
 
-    cap.release()
     cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except rospy.ROSInterruptException:
+        pass

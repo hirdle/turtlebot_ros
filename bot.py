@@ -159,20 +159,17 @@ class BotController:
         Положительный угол - против часовой (влево)
         Отрицательный угол - по часовой (вправо)
         """
-        if not self.odom_data:
-            rospy.logwarn("No odometry data")
-            return False
         
         angle_rad = math.radians(angle_deg)
         start_yaw = self.get_yaw()
-        target_yaw = self._normalize_angle(start_yaw + angle_rad)
+        target_yaw = self._normalize_angle(start_yaw - angle_rad)
         
         twist = Twist()
-        twist.angular.z = abs(speed) if angle_rad > 0 else -abs(speed)
+        twist.angular.z = -abs(speed) if angle_rad > 0 else abs(speed)
         
         while not rospy.is_shutdown():
             current_yaw = self.get_yaw()
-            diff = self._normalize_angle(target_yaw - current_yaw)
+            diff = self._normalize_angle(current_yaw-target_yaw)
             
             if abs(diff) < math.radians(2):  # точность 2 градуса
                 break
@@ -186,15 +183,15 @@ class BotController:
     
     def turn_left(self, angle_deg, speed=0.2):
         """Поворот влево на угол (градусы)"""
-        return self.turn(abs(angle_deg), speed)
+        return self.turn(-abs(angle_deg), speed)
     
 
     def turn_right(self, angle_deg, speed=0.2):
         """Поворот вправо на угол (градусы)"""
-        return self.turn(-abs(angle_deg), speed)
+        return self.turn(abs(angle_deg), speed)
     
 
-    def move_speed(self, left_speed, right_speed, wheel_base=0.287):
+    def move_motors_speed(self, left_speed, right_speed, wheel_base=0.287):
         """
         Движение с заданными скоростями для каждого мотора (м/с)
         left_speed: скорость левого мотора (+ вперед, - назад)
@@ -210,23 +207,6 @@ class BotController:
         self.cmd_vel_pub.publish(twist)
     
 
-    def move_circle(self, radius, speed=0.1, clockwise=False):
-        """
-        Движение по окружности заданного радиуса (непрерывно)
-        radius: радиус окружности (м)
-        speed: линейная скорость (м/с)
-        clockwise: True - по часовой, False - против часовой
-        """
-        angular = speed / radius
-        if clockwise:
-            angular = -angular
-        
-        twist = Twist()
-        twist.linear.x = speed
-        twist.angular.z = angular
-        self.cmd_vel_pub.publish(twist)
-    
-
     def move_circle_arc(self, radius, angle_deg, speed=0.1, clockwise=False):
         """
         Движение по дуге окружности на заданный угол
@@ -235,28 +215,34 @@ class BotController:
         speed: линейная скорость (м/с)
         clockwise: True - по часовой, False - против часовой
         """
-        arc_length = radius * math.radians(abs(angle_deg))
-        angular = speed / radius
+
+        wheel_base = 0.287
+        angular_speed = speed / radius
+        linear_component = angular_speed * (wheel_base / 2.0)
+        
         if clockwise:
-            angular = -angular
+            left_speed = speed + linear_component
+            right_speed = speed - linear_component
+        else:
+            left_speed = speed - linear_component
+            right_speed = speed + linear_component
         
         
-        start_x = self.odom_data.pose.pose.position.x
-        start_y = self.odom_data.pose.pose.position.y
-        
-        twist = Twist()
-        twist.linear.x = speed
-        twist.angular.z = angular
+        current_yaw = self.get_yaw()
+        target_angle_rad = math.radians(abs(angle_deg))
+        accumulated_angle = 0.0
         
         while not rospy.is_shutdown():
-            current_x = self.odom_data.pose.pose.position.x
-            current_y = self.odom_data.pose.pose.position.y
-            traveled = math.sqrt((current_x - start_x)**2 + (current_y - start_y)**2)
+            # Интегрируем изменение угла
+            previous_yaw = current_yaw
+            current_yaw = self.get_yaw()
+            delta = self._normalize_angle(current_yaw - previous_yaw)
+            accumulated_angle += abs(delta)
             
-            if traveled >= arc_length * 0.9:
+            if accumulated_angle >= target_angle_rad:
                 break
             
-            self.cmd_vel_pub.publish(twist)
+            self.move_motors_speed(left_speed, right_speed)
             self.rate.sleep()
         
         self.stop()
@@ -294,7 +280,7 @@ class BotController:
         while not rospy.is_shutdown():
             if condition_func():
                 break
-            self.move_speed(left_speed, right_speed)
+            self.move_motors_speed(left_speed, right_speed)
             self.rate.sleep()
         
         self.stop()
@@ -316,7 +302,7 @@ class BotController:
         if not self.scan_data:
             return float('inf')
         
-        angle_deg = angle_deg % 360
+        angle_deg = abs(-angle_deg + 180) - 360
         num_readings = len(self.scan_data.ranges)
         angle_increment = math.degrees(self.scan_data.angle_increment)
         
@@ -385,10 +371,7 @@ class BotController:
         
         angle_increment = math.degrees(self.scan_data.angle_increment)
         angle_deg = min_index * angle_increment
-        
-        # Нормализация угла: 0-180 слева, 180-360 -> -180 до 0 справа
-        if angle_deg > 180:
-            angle_deg = angle_deg - 360
+        angle_deg = 360 - abs(angle_deg + 180)
         
         return (angle_deg, min_distance)
     
@@ -478,8 +461,7 @@ class BotController:
             center_idx, min_dist = min_point
             
             angle_deg = center_idx * angle_increment
-            if angle_deg > 180:
-                angle_deg -= 360
+            angle_deg = 360 - abs(angle_deg + 180)
             
             # Глобальные координаты
             object_angle_global = robot_yaw + math.radians(angle_deg)
@@ -494,75 +476,45 @@ class BotController:
         return objects
     
 
-    def get_object_width(self, distance_threshold=0.3):
+    def get_object_width(self, distance_threshold=0.5):
         """
         Определение ширины ближайшего объекта
-        distance_threshold: порог разницы расстояний для определения границ объекта (м)
         Возвращает: (width, angle_start, angle_end, distance) или (None, None, None, None)
-        width - ширина объекта в метрах
         """
-        if not self.scan_data:
-            return (None, None, None, None)
         
         ranges = list(self.scan_data.ranges)
-        angle_increment = math.degrees(self.scan_data.angle_increment)
+        n = len(ranges)
+        print(n)
+        angle_inc = math.degrees(self.scan_data.angle_increment)
         
-        # Найти индекс ближайшего объекта
-        min_distance = float('inf')
-        min_index = 0
-        for i, r in enumerate(ranges):
-            if not math.isinf(r) and not math.isnan(r) and r > 0:
-                if r < min_distance:
-                    min_distance = r
-                    min_index = i
+        valid = [(i, r) for i, r in enumerate(ranges) if 0 < r < float('inf') and not math.isnan(r)]
         
-        if min_distance == float('inf'):
-            return (None, None, None, None)
+        min_index, min_dist = min(valid, key=lambda x: x[1])
+        print(min_dist)
+        def find_boundary(direction):
+            idx = min_index
+            for i in range(1, n // 2):
+                next_idx = (min_index + i * direction) % n
+                r = ranges[next_idx]
+                if abs(r - min_dist) > distance_threshold and r != float('inf') and not math.isnan(r):
+                    print(r, min_dist)
+                    break
+                idx = next_idx
+            return idx
         
-        # Найти границы объекта (где расстояние резко увеличивается)
-        num_readings = len(ranges)
+        left_idx, right_idx = find_boundary(1), find_boundary(-1)
+        print(left_idx, right_idx)
+
+        print(angle_inc)
+        angle_span = ((left_idx - right_idx) % n) * angle_inc
+        print(angle_span)
+        width = 2*min_dist * math.sin(math.radians(angle_span / 2))
         
-        # Поиск левой границы
-        left_index = min_index
-        for i in range(1, num_readings // 2):
-            idx = (min_index + i) % num_readings
-            r = ranges[idx]
-            if math.isinf(r) or math.isnan(r) or r <= 0:
-                break
-            if r - min_distance > distance_threshold:
-                break
-            left_index = idx
+        def to_angle(idx):
+            angle = (idx * angle_inc + 180) % 360
+            return 360 - angle if angle > 180 else angle
         
-        # Поиск правой границы
-        right_index = min_index
-        for i in range(1, num_readings // 2):
-            idx = (min_index - i) % num_readings
-            r = ranges[idx]
-            if math.isinf(r) or math.isnan(r) or r <= 0:
-                break
-            if r - min_distance > distance_threshold:
-                break
-            right_index = idx
-        
-        # Вычисление угловой ширины
-        if left_index >= right_index:
-            angle_span = (left_index - right_index) * angle_increment
-        else:
-            angle_span = (num_readings - right_index + left_index) * angle_increment
-        
-        # Вычисление ширины объекта (хорда)
-        angle_span_rad = math.radians(angle_span)
-        width = 2 * min_distance * math.sin(angle_span_rad / 2)
-        
-        # Углы границ
-        angle_start = right_index * angle_increment
-        angle_end = left_index * angle_increment
-        if angle_start > 180:
-            angle_start -= 360
-        if angle_end > 180:
-            angle_end -= 360
-        
-        return (width, angle_start, angle_end, min_distance)
+        return (width, to_angle(right_idx), to_angle(left_idx), min_dist)
     
 
     def _get_averaged_distance(self, center_angle, spread):
@@ -573,7 +525,7 @@ class BotController:
         """
         if not self.scan_data:
             return float('inf')
-        
+
         distances = []
         for angle in range(int(center_angle - spread // 2), int(center_angle + spread // 2 + 1)):
             d = self.get_distance_at_angle(angle)
@@ -674,69 +626,46 @@ class BotController:
         return obstacle_ended
 
 
-    def follow_wall(self, target_distance=0.3, side='right', speed=0.08, duration=None, stop_condition=None):
+    def follow_wall(self, target_distance=0.4, side='right', speed=0.08, duration=None):
         """
         Следование вдоль стены на заданном расстоянии
         target_distance: желаемое расстояние до стены (м)
         side: 'left' или 'right' - с какой стороны стена
         speed: скорость движения (м/с)
         duration: время следования в секундах (None = бесконечно)
-        stop_condition: функция условия остановки (опционально)
+        wheel_base: расстояние между колесами (м)
         """
-        rospy.loginfo("Starting wall following, side=%s, distance=%.2f" % (side, target_distance))
         
-        kp = 2.0
-        kd = 0.5
+        kp = 0.3
+        kd = 0.0
         prev_error = 0.0
         
-        if side == 'right':
-            get_side_distance = self.get_distance_right
-        else:
-            get_side_distance = self.get_distance_left
-        
         start_time = rospy.Time.now()
-        twist = Twist()
         
         while not rospy.is_shutdown():
-            # Проверка времени
-            if duration is not None:
-                elapsed = (rospy.Time.now() - start_time).to_sec()
-                if elapsed >= duration:
-                    break
-            
-            # Проверка условия остановки
-            if stop_condition is not None and stop_condition():
+            if duration is not None and (rospy.Time.now() - start_time).to_sec() >= duration:
                 break
             
-            side_distance = get_side_distance()
-            front_distance = self.get_distance_front()
             
-            # Если впереди препятствие
-            if front_distance < target_distance * 1.5:
-                self.stop()
-                if side == 'right':
-                    self.turn_left(90)
-                else:
-                    self.turn_right(90)
-                continue
+            if side == 'right':
+                # Сектор вокруг 270 градусов
+                side_distance = bot.get_distance_at_angle(70)
+            else:
+                side_distance = bot.get_distance_at_angle(-70)
+
+            print(side_distance)
             
             # PD-регулятор
             error = target_distance - side_distance
             derivative = error - prev_error
             correction = kp * error + kd * derivative
             prev_error = error
-            
-            max_correction = 0.3
+
+            max_correction = 0.1
             correction = max(-max_correction, min(max_correction, correction))
             
-            twist.linear.x = speed
-            if side == 'right':
-                twist.angular.z = correction
-            else:
-                twist.angular.z = -correction
-            
-            self.cmd_vel_pub.publish(twist)
-            self.rate.sleep()
+            self.move_motors_speed(speed-correction, speed+correction)
+            self.wait(0.05)
         
         self.stop()
         return True
@@ -787,7 +716,14 @@ if __name__ == '__main__':
         rospy.loginfo("BotController initialized")
         if not bot.wait_for_hardware():
             sys.exit(0)
-        
+        # print(bot.get_distance_at_angle(70))
+        bot.follow_wall(duration=30)
+        # print(bot.get_position())
+        # print(bot.get_object_width(0.05))
+        # print(bot.get_object_position())
+        # bot.move_circle_arc(0.5, 90, speed=0.05, clockwise=True)
+        #                     )
+            
         rospy.loginfo("All sensors ready")
         
             
