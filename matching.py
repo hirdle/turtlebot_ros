@@ -169,3 +169,4 @@ def detect_traffic_light(frame, min_area=5000):
             result.append((color, contour, cv2.contourArea(contour)))
     
     return sorted(result, key=lambda x: x[2], reverse=True)
+
