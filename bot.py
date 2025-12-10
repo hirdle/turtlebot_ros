@@ -10,27 +10,26 @@ from nav_msgs.msg import Odometry
 
 import sys
 
-import cv2
-import numpy as np
-from cv_bridge import CvBridge, CvBridgeError
+from cv_bridge import CvBridge
 
 
 class BotController:
     """Универсальный класс для управления TurtleBot3 Waffle Pi"""
     
-    def __init__(self, node_name='bot_controller', init_node=True):
-        if init_node:
-            rospy.init_node(node_name, anonymous=True)
+    def __init__(self, node_name='bot_controller'):
+        rospy.init_node(node_name, anonymous=True)
         
         # Публикация команд движения
         self.cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+
+        self.wheel_base = 0.287
         
         # Данные сенсоров
         self.scan_data = None
         self.imu_data = None
         self.odom_data = None
         
-        # Начальная позиция для сброса одометрии
+        # Начальная позиция
         self.start_x = 0.0
         self.start_y = 0.0
         self.start_yaw = 0.0
@@ -47,13 +46,7 @@ class BotController:
         
         self.rate = rospy.Rate(10)
         
-        rospy.on_shutdown(self._shutdown_callback)
-
-    
-    def _shutdown_callback(self):
-        """Вызывается при завершении программы (Ctrl+C)"""
-        rospy.loginfo("Shutting down, stopping robot...")
-        self.stop()
+        rospy.on_shutdown(self.stop)
 
     
     def wait_for_hardware(self, timeout=10.0):
@@ -74,8 +67,6 @@ class BotController:
             camera_ok = self.current_frame is not None
             
             if scan_ok and imu_ok and odom_ok and camera_ok:
-                rospy.loginfo("All hardware initialized (scan=%s, imu=%s, odom=%s, camera=%s)" 
-                             % (scan_ok, imu_ok, odom_ok, camera_ok))
                 return True
             
             rospy.sleep(0.1)
@@ -100,7 +91,7 @@ class BotController:
     def _image_callback(self, msg):
         try:
             self.current_frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        except CvBridgeError as e:
+        except Exception as e:
             rospy.logerr("CvBridge Error: %s" % e)
 
     def get_image(self):
@@ -128,9 +119,6 @@ class BotController:
 
     def _move_linear(self, distance, speed):
         """Линейное движение по одометрии"""
-        if not self.odom_data:
-            rospy.logwarn("No odometry data")
-            return False
         
         start_x = self.odom_data.pose.pose.position.x
         start_y = self.odom_data.pose.pose.position.y
@@ -156,8 +144,6 @@ class BotController:
     def turn(self, angle_deg, speed=0.2):
         """
         Поворот на заданный угол (градусы)
-        Положительный угол - против часовой (влево)
-        Отрицательный угол - по часовой (вправо)
         """
         
         angle_rad = math.radians(angle_deg)
@@ -181,25 +167,23 @@ class BotController:
         return True
     
     
-    def turn_left(self, angle_deg, speed=0.2):
+    def turn_left(self, angle_deg=90, speed=0.2):
         """Поворот влево на угол (градусы)"""
         return self.turn(-abs(angle_deg), speed)
     
 
-    def turn_right(self, angle_deg, speed=0.2):
+    def turn_right(self, angle_deg=90, speed=0.2):
         """Поворот вправо на угол (градусы)"""
         return self.turn(abs(angle_deg), speed)
     
 
-    def move_motors_speed(self, left_speed, right_speed, wheel_base=0.287):
+    def move_motors_speed(self, left_speed, right_speed):
         """
-        Движение с заданными скоростями для каждого мотора (м/с)
-        left_speed: скорость левого мотора (+ вперед, - назад)
-        right_speed: скорость правого мотора (+ вперед, - назад)
-        wheel_base: расстояние между колесами (м), для TurtleBot3 Waffle Pi = 0.287
+        Движение с /заданными скоростями для каждого мотора (м/с)
         """
+
         linear = (right_speed + left_speed) / 2.0
-        angular = (right_speed - left_speed) / wheel_base
+        angular = (right_speed - left_speed) / self.wheel_base
         
         twist = Twist()
         twist.linear.x = linear
@@ -216,9 +200,8 @@ class BotController:
         clockwise: True - по часовой, False - против часовой
         """
 
-        wheel_base = 0.287
         angular_speed = speed / radius
-        linear_component = angular_speed * (wheel_base / 2.0)
+        linear_component = angular_speed * (self.wheel_base / 2.0)
         
         if clockwise:
             left_speed = speed + linear_component
@@ -252,9 +235,6 @@ class BotController:
     def move_by_condition(self, linear_speed, angular_speed, condition_func):
         """
         Движение с заданными скоростями до выполнения условия
-        linear_speed: линейная скорость (м/с)
-        angular_speed: угловая скорость (рад/с)
-        condition_func: функция, возвращающая True для остановки
         """
         twist = Twist()
         twist.linear.x = linear_speed
@@ -272,9 +252,6 @@ class BotController:
     def move_motors_by_condition(self, left_speed, right_speed, condition_func):
         """
         Движение с заданными скоростями до выполнения условия
-        linear_speed: линейная скорость (м/с)
-        angular_speed: угловая скорость (рад/с)
-        condition_func: функция, возвращающая True для остановки
         """
 
         while not rospy.is_shutdown():
@@ -347,6 +324,81 @@ class BotController:
         return float('inf')
     
 
+    def get_sector_data(self, start_angle, end_angle):
+        """
+        Получить все данные лидара в секторе [start_angle, end_angle]
+        """
+        if not self.scan_data:
+            return []
+        
+        num_readings = len(self.scan_data.ranges)
+        angle_increment = math.degrees(self.scan_data.angle_increment)
+        result = []
+        
+        # Нормализуем углы в диапазон [0, 360)
+        start = start_angle % 360
+        end = end_angle % 360
+        
+        for i in range(num_readings):
+            # Преобразуем индекс в угол (обратное преобразование из get_distance_at_angle)
+            raw_angle = i * angle_increment
+            angle_deg = 360 - abs(raw_angle + 180)
+            angle_deg = angle_deg % 360
+            
+            # Проверяем, попадает ли угол в сектор
+            if start <= end:
+                in_sector = start <= angle_deg <= end
+            else:
+                # Сектор пересекает 0 градусов
+                in_sector = angle_deg >= start or angle_deg <= end
+            
+            if in_sector:
+                distance = self.scan_data.ranges[i]
+                if not math.isinf(distance) and not math.isnan(distance):
+                    result.append((angle_deg, distance))
+        
+        result.sort(key=lambda x: x[0])
+        return result
+    
+
+    def get_sector_xy(self, start_angle, end_angle):
+        """
+        Получить все данные лидара в секторе [start_angle, end_angle]
+        """
+        if not self.scan_data:
+            return []
+        
+        num_readings = len(self.scan_data.ranges)
+        angle_increment = math.degrees(self.scan_data.angle_increment)
+        
+        # Нормализуем углы в диапазон [0, 360)
+        start = start_angle % 360
+        end = end_angle % 360
+        
+        xs, ys = [], []
+        
+        for i in range(num_readings):
+            # Преобразуем индекс в угол (обратное преобразование из get_distance_at_angle)
+            raw_angle = i * angle_increment
+            angle_deg = 360 - abs(raw_angle + 180)
+            angle_deg = angle_deg % 360
+            
+            # Проверяем, попадает ли угол в сектор
+            if start <= end:
+                in_sector = start <= angle_deg <= end
+            else:
+                # Сектор пересекает 0 градусов
+                in_sector = angle_deg >= start or angle_deg <= end
+            
+            if in_sector:
+                distance = self.scan_data.ranges[i]
+                if not math.isinf(distance) and not math.isnan(distance):
+                    xs.append(distance * math.cos(math.radians(angle_deg)))
+                    ys.append(distance * math.sin(math.radians(angle_deg)))
+        
+        return xs, ys
+    
+
     def get_object_angle_distance(self):
         """
         Определение угла и расстояния до ближайшего объекта
@@ -412,6 +464,7 @@ class BotController:
         Returns:
             list of (x, y, distance, angle_deg) для каждого объекта, отсортированный по расстоянию
         """
+        
         if not self.scan_data:
             return []
         
@@ -476,164 +529,13 @@ class BotController:
         return objects
     
 
-    def get_object_width(self, distance_threshold=0.5):
-        """
-        Определение ширины ближайшего объекта
-        Возвращает: (width, angle_start, angle_end, distance) или (None, None, None, None)
-        """
-        
-        ranges = list(self.scan_data.ranges)
-        n = len(ranges)
-        print(n)
-        angle_inc = math.degrees(self.scan_data.angle_increment)
-        
-        valid = [(i, r) for i, r in enumerate(ranges) if 0 < r < float('inf') and not math.isnan(r)]
-        
-        min_index, min_dist = min(valid, key=lambda x: x[1])
-        print(min_dist)
-        def find_boundary(direction):
-            idx = min_index
-            for i in range(1, n // 2):
-                next_idx = (min_index + i * direction) % n
-                r = ranges[next_idx]
-                if abs(r - min_dist) > distance_threshold and r != float('inf') and not math.isnan(r):
-                    print(r, min_dist)
-                    break
-                idx = next_idx
-            return idx
-        
-        left_idx, right_idx = find_boundary(1), find_boundary(-1)
-        print(left_idx, right_idx)
-
-        print(angle_inc)
-        angle_span = ((left_idx - right_idx) % n) * angle_inc
-        print(angle_span)
-        width = 2*min_dist * math.sin(math.radians(angle_span / 2))
-        
-        def to_angle(idx):
-            angle = (idx * angle_inc + 180) % 360
-            return 360 - angle if angle > 180 else angle
-        
-        return (width, to_angle(right_idx), to_angle(left_idx), min_dist)
-    
-
-    def _get_averaged_distance(self, center_angle, spread):
-        """
-        Получить усреднённое расстояние в секторе
-        center_angle: центральный угол (градусы)
-        spread: ширина сектора в градусах (+-spread/2)
-        """
-        if not self.scan_data:
-            return float('inf')
-
-        distances = []
-        for angle in range(int(center_angle - spread // 2), int(center_angle + spread // 2 + 1)):
-            d = self.get_distance_at_angle(angle)
-            if not math.isinf(d) and not math.isnan(d) and d > 0:
-                distances.append(d)
-        
-        if distances:
-            return sum(distances) / len(distances)
-        return float('inf')
-
-
-    # ==================== OBSTACLE AVOIDANCE ====================
-
-    def avoid_obstacle(self, target_distance=0.3, side='right', speed=0.08, extra_distance=0.15):
-        """
-        Объезд препятствия с поддержанием заданного расстояния
-        target_distance: желаемое расстояние до препятствия при объезде (м)
-        side: 'left' или 'right' - с какой стороны объезжать
-        speed: скорость движения (м/с)
-        extra_distance: дополнительное расстояние после конца препятствия (м)
-        """
-        rospy.loginfo("Starting obstacle avoidance, side=%s, distance=%.2f" % (side, target_distance))
-        
-        # PD-регулятор параметры
-        kp = 2.0  # пропорциональный коэффициент
-        kd = 0.5  # дифференциальный коэффициент
-        prev_error = 0.0
-        
-        # Определяем направление поворота и функцию измерения расстояния
-        if side == 'right':
-            turn_angle = -90
-            get_side_distance = self.get_distance_left
-        else:
-            turn_angle = 90
-            get_side_distance = self.get_distance_right
-        
-        # 1. Поворот на 90° в сторону объезда
-        self.turn(turn_angle)
-        rospy.sleep(0.2)
-        
-        # 2. Движение вдоль препятствия с PD-регулятором
-        obstacle_ended = False
-        end_counter = 0
-        end_threshold = 10  # количество итераций для подтверждения конца препятствия
-        
-        twist = Twist()
-        
-        while not rospy.is_shutdown():
-            side_distance = get_side_distance()
-            front_distance = self.get_distance_front()
-            
-            # Проверка на конец препятствия (расстояние сбоку резко увеличилось)
-            if side_distance > target_distance * 2.5:
-                end_counter += 1
-                if end_counter >= end_threshold:
-                    obstacle_ended = True
-                    rospy.loginfo("Obstacle end detected")
-                    break
-            else:
-                end_counter = 0
-            
-            # Если впереди препятствие - остановка и поворот
-            if front_distance < target_distance:
-                self.stop()
-                self.turn(turn_angle)
-                rospy.sleep(0.2)
-                continue
-            
-            # PD-регулятор для поддержания дистанции
-            error = target_distance - side_distance
-            derivative = error - prev_error
-            correction = kp * error + kd * derivative
-            prev_error = error
-            
-            # Ограничение коррекции
-            max_correction = 0.3
-            correction = max(-max_correction, min(max_correction, correction))
-            
-            # Применение скоростей
-            twist.linear.x = speed
-            if side == 'right':
-                twist.angular.z = -correction  # отрицательная коррекция для правой стороны
-            else:
-                twist.angular.z = correction
-            
-            self.cmd_vel_pub.publish(twist)
-            self.rate.sleep()
-        
-        # 3. Проехать немного вперёд после конца препятствия
-        if obstacle_ended:
-            self.move_forward(extra_distance, speed)
-            
-            # 4. Повернуть обратно к исходному направлению
-            self.turn(-turn_angle)
-            rospy.loginfo("Obstacle avoidance completed")
-        
-        self.stop()
-        return obstacle_ended
-
-
-    def follow_wall(self, target_distance=0.4, side='right', speed=0.08, duration=None):
+    def follow_wall(self, target_distance=0.4, side='right', speed=0.1, duration=None):
         """
         Следование вдоль стены на заданном расстоянии
         target_distance: желаемое расстояние до стены (м)
         side: 'left' или 'right' - с какой стороны стена
         speed: скорость движения (м/с)
         duration: время следования в секундах (None = бесконечно)
-        wheel_base: расстояние между колесами (м)
         """
         
         kp = 0.3
@@ -641,31 +543,59 @@ class BotController:
         prev_error = 0.0
         
         start_time = rospy.Time.now()
-        
+
         while not rospy.is_shutdown():
             if duration is not None and (rospy.Time.now() - start_time).to_sec() >= duration:
                 break
             
-            
             if side == 'right':
                 # Сектор вокруг 270 градусов
-                side_distance = bot.get_distance_at_angle(70)
+                xs, ys = bot.get_sector_xy(70, 110)
             else:
-                side_distance = bot.get_distance_at_angle(-70)
+                xs, ys = bot.get_sector_xy(-110, -70)
 
-            print(side_distance)
-            
-            # PD-регулятор
-            error = target_distance - side_distance
-            derivative = error - prev_error
-            correction = kp * error + kd * derivative
-            prev_error = error
 
-            max_correction = 0.1
-            correction = max(-max_correction, min(max_correction, correction))
+            if len(xs) < 5:
+                return
             
-            self.move_motors_speed(speed-correction, speed+correction)
-            self.wait(0.05)
+            # 2. Центроид
+            x_mean = sum(xs)/len(xs)
+            y_mean = sum(ys)/len(ys)
+
+            # 3. Ковариация
+            Sxx = sum((x - x_mean)**2 for x in xs)/len(xs)
+            Syy = sum((y - y_mean)**2 for y in ys)/len(ys)
+            Sxy = sum((x - x_mean)*(y - y_mean) for x, y in zip(xs, ys))/len(xs)
+
+            # 4. Собственные векторы (для простоты через формулы 2x2)
+            theta = 0.5 * math.atan2(2*Sxy, Sxx - Syy)
+            u_x = math.cos(theta)
+            u_y = math.sin(theta)
+
+            # нормаль к стене
+            n_x = -u_y
+            n_y = u_x
+
+            # 5. расстояние до стены
+            d = n_x * x_mean + n_y * y_mean   # предполагаем, что n единичной длины
+
+            e_d = target_distance - d
+
+            # 6. ошибка по углу (стена должна быть параллельна X)
+            phi_wall = math.atan2(u_y, u_x)
+            e_phi = -phi_wall
+
+            # 7. контроллер
+            k_d = 1.0
+            k_phi = 2.0
+
+            omega = k_phi * e_phi + k_d * e_d
+
+            cmd = Twist()
+            cmd.linear.x = speed
+            cmd.angular.z = omega
+            self.cmd_vel_pub.publish(cmd)
+
         
         self.stop()
         return True
@@ -681,6 +611,7 @@ class BotController:
         orientation = self.odom_data.pose.pose.orientation
         quaternion = (orientation.x, orientation.y, orientation.z, orientation.w)
         euler = tf.transformations.euler_from_quaternion(quaternion)
+
         return euler[2]  # yaw
     
 
@@ -702,11 +633,7 @@ class BotController:
     
     def _normalize_angle(self, angle):
         """Нормализация угла в диапазон [-pi, pi]"""
-        while angle > math.pi:
-            angle -= 2 * math.pi
-        while angle < -math.pi:
-            angle += 2 * math.pi
-        return angle
+        return math.atan2(math.sin(angle), math.cos(angle))
     
 
 # Пример использования
@@ -714,18 +641,11 @@ if __name__ == '__main__':
     try:
         bot = BotController()
         rospy.loginfo("BotController initialized")
+        
         if not bot.wait_for_hardware():
             sys.exit(0)
-        # print(bot.get_distance_at_angle(70))
-        bot.follow_wall(duration=30)
-        # print(bot.get_position())
-        # print(bot.get_object_width(0.05))
-        # print(bot.get_object_position())
-        # bot.move_circle_arc(0.5, 90, speed=0.05, clockwise=True)
-        #                     )
-            
-        rospy.loginfo("All sensors ready")
         
+        bot.follow_wall(duration=30)
             
     except rospy.ROSInterruptException:
         pass
