@@ -44,7 +44,7 @@ class BotController:
         
         rospy.Subscriber('/front_camera/image_raw', Image, self._image_callback)
         
-        self.rate = rospy.Rate(10)
+        self.rate = rospy.Rate(100)
         
         rospy.on_shutdown(self.stop)
 
@@ -529,7 +529,7 @@ class BotController:
         return objects
     
 
-    def follow_wall(self, target_distance=0.4, side='right', speed=0.1, duration=None):
+    def follow_wall(self, target_distance=0.4, side='right', speed=0.15, duration=None):
         """
         Следование вдоль стены на заданном расстоянии
         target_distance: желаемое расстояние до стены (м)
@@ -537,12 +537,11 @@ class BotController:
         speed: скорость движения (м/с)
         duration: время следования в секундах (None = бесконечно)
         """
-        
-        kp = 0.3
-        kd = 0.0
-        prev_error = 0.0
+        l = open('logs.csv', 'w')
         
         start_time = rospy.Time.now()
+        last_omega = 0
+        e_i = 0
 
         while not rospy.is_shutdown():
             if duration is not None and (rospy.Time.now() - start_time).to_sec() >= duration:
@@ -550,13 +549,21 @@ class BotController:
             
             if side == 'right':
                 # Сектор вокруг 270 градусов
-                xs, ys = bot.get_sector_xy(70, 110)
+                xs, ys = bot.get_sector_xy(55, 125)
             else:
                 xs, ys = bot.get_sector_xy(-110, -70)
 
 
-            if len(xs) < 5:
-                return
+            if len(xs) < 3:
+                cmd = Twist()
+                cmd.linear.x = speed
+                cmd.angular.z = last_omega
+                self.cmd_vel_pub.publish(cmd)
+
+                print('stalled')
+
+                self.rate.sleep()
+                continue
             
             # 2. Центроид
             x_mean = sum(xs)/len(xs)
@@ -585,16 +592,34 @@ class BotController:
             phi_wall = math.atan2(u_y, u_x)
             e_phi = -phi_wall
 
-            # 7. контроллер
-            k_d = 1.0
-            k_phi = 2.0
 
-            omega = k_phi * e_phi + k_d * e_d
+
+            # print(e_d, phi_wall)
+            # print(f'{e_d},{e_phi}', file=l)
+            e_i += e_phi
+
+            # 7. контроллер
+            k_d = 1.5
+            k_phi = 2
+            k_i = 0.01
+
+            omega = k_phi * e_phi + k_d * e_d + k_i * e_i
+            if omega > 1.5:
+                omega = 1.5
+            elif omega < -1.5:
+                omega = -1.5
+
+            last_omega = omega
 
             cmd = Twist()
             cmd.linear.x = speed
             cmd.angular.z = omega
             self.cmd_vel_pub.publish(cmd)
+
+            # print(f'{e_d},{omega}', file=l)
+
+
+            self.rate.sleep()
 
         
         self.stop()
@@ -645,7 +670,9 @@ if __name__ == '__main__':
         if not bot.wait_for_hardware():
             sys.exit(0)
         
-        bot.follow_wall(duration=30)
-            
+        # print(bot.get_sector_data(10, 50))
+        # print(bot.get_min_distance())
+        # bot.follow_wall(duration=1000, side='left', target_distance=0.2)
+ 
     except rospy.ROSInterruptException:
         pass
