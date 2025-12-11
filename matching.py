@@ -13,6 +13,7 @@ COLORS = {
     'blue': ((100, 100, 100), (130, 255, 255)),
     'green': ((40, 30, 30), (80, 255, 255)),
     'yellow': ((20, 100, 100), (40, 255, 255)),
+    'black': ((0, 0, 0), (180, 255, 60)),
     'red': None,  # особый случай - два диапазона
 }
 
@@ -26,8 +27,10 @@ def _get_mask(img, color):
     
     if color == 'red':
         m1 = cv2.inRange(hsv, np.array([0, 100, 100]), np.array([10, 255, 255]))
-        m2 = cv2.inRange(hsv, np.array([160, 100, 100]), np.array([180, 255, 255]))
-        mask = cv2.bitwise_or(m1, m2)
+        # m2 = cv2.inRange(hsv, np.array([160, 100, 100]), np.array([180, 255, 255]))
+        m3 = cv2.inRange(hsv, np.array([0, 70, 60]), np.array([185, 220, 150]))
+        mask = cv2.bitwise_or(m1, m3)
+
     else:
         low, high = COLORS.get(color, COLORS['blue'])
         mask = cv2.inRange(hsv, np.array(low), np.array(high))
@@ -169,4 +172,3 @@ def detect_traffic_light(frame, min_area=5000):
             result.append((color, contour, cv2.contourArea(contour)))
     
     return sorted(result, key=lambda x: x[2], reverse=True)
-

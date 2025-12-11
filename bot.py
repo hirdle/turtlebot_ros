@@ -7,6 +7,9 @@ import tf
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan, Imu, Image
 from nav_msgs.msg import Odometry
+import cv2
+
+import matching
 
 import sys
 
@@ -624,6 +627,40 @@ class BotController:
         
         self.stop()
         return True
+    
+
+    def follow_object(self, color='black', min_area=1000):
+
+        while not rospy.is_shutdown():
+            img = self.get_image()
+            if img is not None:
+                mask = matching._get_mask(img, color)
+                countour = matching._find_contour(mask, min_area=min_area)
+                if countour is not None:
+                    pts = countour.reshape(-1, 2)
+                    x1,y1 = pts.min(axis=0)
+                    x2,y2 = pts.max(axis=0)
+                    x_center = (x1 + x2) // 2
+                    img_center = img.shape[1] // 2
+                    cv2.rectangle(img, (x1,y1), (x2,y2), (0,255,0), 2)
+                    cv2.line(img, (img_center,0), (img_center, img.shape[0]), (255,0,0), 2)
+                    cv2.line(img, (x_center,0), (x_center, img.shape[0]), (0,0,255), 2)
+                    
+
+                    diff = (img_center - x_center) * 0.0012
+
+                    twist = Twist()
+                    twist.angular.z = diff
+
+                    twist.linear.x = 0.1
+
+                    self.cmd_vel_pub.publish(twist)
+                    
+                else:
+                    print('not')
+
+            self.rate.sleep()
+        
 
 
     # ==================== IMU / ODOMETRY ====================
@@ -660,6 +697,8 @@ class BotController:
         """Нормализация угла в диапазон [-pi, pi]"""
         return math.atan2(math.sin(angle), math.cos(angle))
     
+    
+    
 
 # Пример использования
 if __name__ == '__main__':
@@ -669,6 +708,8 @@ if __name__ == '__main__':
         
         if not bot.wait_for_hardware():
             sys.exit(0)
+        # bot.follow_object()
+        bot.turn_right()
         
         # print(bot.get_sector_data(10, 50))
         # print(bot.get_min_distance())
