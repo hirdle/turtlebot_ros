@@ -119,6 +119,40 @@ class Bot:
             angle_new = 0
 
         return ranges[angle_new]
+    
+
+    def track_turn_object(self):
+        while not rospy.is_shutdown():
+
+            img = b.get_image()
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            kernel = np.ones((5,5), np.uint8)
+            img = cv2.inRange(img, color_blue[0], color_blue[1])
+
+            contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours = [c for c in contours if cv2.contourArea(c) > 1000]
+
+            if contours:
+                contour_main = contours[0]
+
+                pts = contour_main.reshape(-1,2)
+                x1,y1 = pts.min(axis=0)
+                x2,y2 = pts.max(axis=0)
+
+                h,w = img.shape[:2]
+
+                diff = w//2-(x2+x1)//2
+                speed_z = diff*0.001
+
+                twist = Twist()
+                twist.angular.z = speed_z
+                b.cmd_vel.publish(twist)
+
+                b.rate.sleep()
+
+                cv2.imshow('test', img)
+                if cv2.waitKey(10) == ord('q'):
+                    break
 
 
     def get_curr_angle(self):
@@ -137,41 +171,6 @@ b = Bot()
 
 b.wait(500)
 
-while not rospy.is_shutdown():
 
-    img = b.get_image()
 
-    img=cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    
-    kernel = np.ones((5,5), np.uint8)
 
-    img = cv2.inRange(img, color_blue[0], color_blue[1])
-
-    contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    # print(contours)
-    contours = [c for c in contours if cv2.contourArea(c) > 1000]
-    if contours:
-        contour_main = contours[0]
-
-        pts = contour_main.reshape(-1,2)
-        x1,y1 = pts.min(axis=0)
-        x2,y2 = pts.max(axis=0)
-
-        h,w = img.shape[:2]
-        # print(w)
-
-        diff = w//2-(x2+x1)//2
-        speed_z = diff*0.001
-
-        twist = Twist()
-        twist.angular.z = speed_z
-        b.cmd_vel.publish(twist)
-
-        b.rate.sleep()
-
-        cv2.imshow('test', img)
-        if cv2.waitKey(10) == ord('q'):
-            break
-# b.move_linear(0.1, -0.15)
-# b.turn(90)
-# print(b.get_curr_angle())

@@ -8,6 +8,9 @@ from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan, Imu, Image
 from nav_msgs.msg import Odometry
 import cv2
+import actionlib
+from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+
 
 import matching
 
@@ -41,6 +44,9 @@ class BotController:
         rospy.Subscriber('/scan', LaserScan, self._scan_callback)
         rospy.Subscriber('/imu', Imu, self._imu_callback)
         rospy.Subscriber('/odom', Odometry, self._odom_callback)
+
+        self.client = actionlib.SimpleActionClient('move_base',MoveBaseAction)
+        self.client.wait_for_server()
 
         self.bridge = CvBridge()
         self.current_frame = None
@@ -697,6 +703,17 @@ class BotController:
         """Нормализация угла в диапазон [-pi, pi]"""
         return math.atan2(math.sin(angle), math.cos(angle))
     
+    def send_goal(self, x, y, w=1.0):
+        goal = MoveBaseGoal()
+        goal.target_pose.header.frame_id = "map"
+        goal.target_pose.header.stamp = rospy.Time.now()
+        goal.target_pose.pose.position.x = x # Координаты в системе отсчета карты
+        goal.target_pose.pose.position.y = y # (0,0) - точка включения навигации
+        goal.target_pose.pose.orientation.w = w
+
+        self.client.send_goal(goal)
+        self.client.wait_for_result()
+    
     
     
 
@@ -705,11 +722,12 @@ if __name__ == '__main__':
     try:
         bot = BotController()
         rospy.loginfo("BotController initialized")
-        
-        if not bot.wait_for_hardware():
-            sys.exit(0)
+        bot.wait(1000)
+        # if not bot.wait_for_hardware():
+        #     sys.exit(0)
         # bot.follow_object()
-        bot.turn_right()
+        # bot.turn_right()
+        bot.send_goal(1,1)
         
         # print(bot.get_sector_data(10, 50))
         # print(bot.get_min_distance())
