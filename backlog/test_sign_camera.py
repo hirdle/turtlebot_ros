@@ -9,8 +9,8 @@ import rospy
 import cv2
 import glob
 import os
-from bot import BotController
-from matching import detect_sign
+from actual.bot import BotController
+from actual.matching import detect_sign
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "template")
 

@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import rospy
 import cv2
-from bot import BotController
+from actual.bot import BotController
 import matching_aruco
 
 

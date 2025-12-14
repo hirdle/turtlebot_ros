@@ -7,8 +7,8 @@
 
 import rospy
 import cv2
-from bot import BotController
-from matching import detect_traffic_light
+from actual.bot import BotController
+from actual.matching import detect_traffic_light
 
 COLOR_BGR = {
     'red': (0, 0, 255),

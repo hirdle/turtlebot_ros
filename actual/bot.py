@@ -12,7 +12,7 @@ import actionlib
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 
 
-import matching
+import actual.matching as matching
 
 import sys
 
