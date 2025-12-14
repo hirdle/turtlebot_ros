@@ -106,47 +106,53 @@ actionlib
 3. возвращаем scan_data.ranges[angle]
 
 ## Функция get_min_distance
-1. если scan_data пуст, возвращаем бесконечность
-2. фильтруем ranges: убираем inf, NaN и значения <= 0
-3. если есть валидные расстояния, берем минимум, иначе бесконечность
+1. если scan_data нет, сразу возвращаем inf
+2. берем все ranges, отбрасываем inf, NaN и значения <= 0
+3. если в списке что-то осталось, возвращаем минимум, иначе inf
 
 ## Функция get_sector_data
-1. если scan_data пуст, возвращаем []
-2. берем число лучей и шаг угла в градусах
-3. нормализуем start_angle и end_angle по модулю 360
-4. идем по всем измерениям, считаем angle_deg = 360 - abs(raw_angle + 180), angle_deg % 360
-5. проверяем попадание в сектор (учет перехода через 0); если внутри и расстояние валидно, кладем (angle_deg, distance) в список
-6. сортируем по углу и возвращаем
+1. если нет scan_data, вернуть []
+2. число лучей = len(ranges), угол шага = degrees(angle_increment)
+3. нормализуем start_angle, end_angle по модулю 360
+4. проходим все лучи:
+- raw_angle = i * angle_increment в градусах
+- angle_deg = 360 - abs(raw_angle + 180), потом % 360
+- проверяем попадание в сектор: если start<=end, то start<=angle<=end, иначе угол >= start или <= end (переход через 0)
+- если внутри и distance валиден (не inf/NaN), добавляем (angle_deg, distance) в список
+5. сортируем result по angle_deg и возвращаем
 
 ## Функция get_sector_xy
-1. если scan_data пуст, возвращаем []
-2. берем шаг угла в градусах, нормализуем start/end
-3. идем по лучам, считаем angle_deg как 360 - abs(raw_angle + 180) с модулем 360
-4. проверяем попадание в сектор; для валидных расстояний считаем x = r*cos(rad), y = r*sin(rad), добавляем в списки
-5. возвращаем xs, ys
+1. если нет scan_data, вернуть []
+2. шаг угла = degrees(angle_increment); start/end нормализуем по 360
+3. проходим все лучи:
+- angle_deg = (360 - abs(i*step + 180)) % 360
+- проверяем попадание в сектор (как выше)
+- если валидное расстояние, считаем x = r * cos(rad(angle_deg)), y = r * sin(rad(angle_deg)), добавляем в списки
+4. возвращаем списки xs, ys
 
 ## Функция get_object_angle_distance
-1. если scan_data пуст, возвращаем (None, бесконечность)
-2. проходим ranges, ищем минимальное валидное расстояние (>0, не inf/NaN), запоминаем индекс
-3. если ничего не нашли, возвращаем (None, бесконечность)
-4. считаем angle_deg = idx * angle_increment в градусах, затем 360 - abs(angle_deg + 180)
-5. возвращаем (angle_deg, min_distance)
+1. если нет scan_data, вернуть (None, inf)
+2. пройти ranges, игнорируя inf/NaN/<=0, найти минимум и его индекс
+3. если минимум не найден, вернуть (None, inf)
+4. угол: angle_deg = idx * step_deg, затем 360 - abs(angle_deg + 180)
+5. вернуть (angle_deg, min_distance)
 
 ## Функция get_object_position
-1. берем angle_deg, distance из get_object_angle_distance; если angle_deg None, возвращаем (None, None, None, None)
-2. получаем позицию робота (x, y) и yaw в радианах
-3. считаем глобальный угол до объекта: yaw + radians(angle_deg)
-4. объект: x + distance * cos(угол), y + distance * sin(угол)
+1. берем angle_deg, distance из get_object_angle_distance; если угол None, вернуть (None, None, None, None)
+2. берем позицию робота (x, y) и yaw = radians(get_angle())
+3. глобальный угол на объект = yaw + radians(angle_deg)
+4. считаем object_x = x + distance * cos(глобальный угол), object_y = y + distance * sin(глобальный угол)
 5. возвращаем (object_x, object_y, distance, angle_deg)
 
 ## Функция get_objects_positions
-1. если scan_data пуст, возвращаем []
-2. собираем points = (index, distance) для валидных измерений (0 < r < max_distance)
-3. если points пуст, возвращаем []
-4. кластеризуем по разрыву индексов > 5 или по скачку расстояния > distance_threshold; сохраняем кластеры длиной >= min_cluster_size
-5. берем позицию и yaw робота, готовим список объектов
-6. для каждого кластера: берем точку с минимальной дистанцией, переводим индекс в angle_deg (360 - abs(angle_deg + 180)), считаем глобальный угол yaw + radians(angle_deg) и координаты объекта
-7. добавляем (x, y, distance, angle_deg) в список, сортируем объекты по расстоянию и возвращаем
+1. если нет scan_data, вернуть []
+2. собрать points: (index, r) для валидных измерений (0 < r < max_distance, не inf/NaN)
+3. если points пуст, вернуть []
+4. кластеризация по соседним точкам: разрыв индексов > 5 или скачок расстояния > distance_threshold — новый кластер; сохраняем только кластеры длиной >= min_cluster_size
+5. позиция и yaw робота берутся заранее; для каждого кластера берем точку с минимальной дистанцией
+6. угол: angle_deg = idx * step_deg, потом 360 - abs(angle_deg + 180); глобальный угол = yaw + radians(angle_deg)
+7. координаты объекта: x + dist*cos(глобальный угол), y + dist*sin(глобальный угол); добавляем (x, y, dist, angle_deg)
+8. сортируем объекты по dist и возвращаем
 
 ## Функция get_mask
 1. создаем kernel 5x5 из единиц с типом np.uint8
