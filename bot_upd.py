@@ -34,6 +34,7 @@ class Bot():
 
         self.base_speed = 0.15
         self.turn_speed = 1
+        self.wheel_base = 0.287
 
         self.odom_data = None
         self.scan_data = None
@@ -120,6 +121,49 @@ class Bot():
 
         self.stop()
 
+
+    def move_motors_speed(self, left_speed, right_speed):
+        
+        linear = (right_speed + left_speed) / 2.0
+        angular = (right_speed - left_speed) / self.wheel_base
+
+        twist = Twist()
+        twist.linear.x = linear
+        twist.angular.z = angular
+        self.cmd_vel_pub.publish(twist)
+    
+
+    def move_circle_arc(self, radius, angle_deg, speed=0.1, clockwise=False):
+
+        angular_speed = speed / radius
+        linear_component = angular_speed * (self.wheel_base / 2.0)
+
+        if clockwise:
+            left_speed = speed + linear_component
+            right_speed = speed - linear_component
+        else:
+            left_speed = speed - linear_component
+            right_speed = speed + linear_component
+
+        current_angle = self.get_angle()
+        target_angle_deg = abs(angle_deg)
+        accumulated_angle = 0.0
+
+        while not rospy.is_shutdown():
+            previous_angle = current_angle
+            current_angle = self.get_angle()
+            delta = self.normilize_angle(current_angle - previous_angle)
+            accumulated_angle += abs(delta)
+
+            if accumulated_angle >= target_angle_deg:
+                break
+
+            self.move_motors_speed(left_speed, right_speed)
+            self.rate.sleep()
+
+        self.stop()
+
+
     def get_distance_at_angle(self, angle):
 
         angle = 360-abs(-angle - 180)
@@ -128,6 +172,197 @@ class Bot():
             angle = 0
 
         return self.scan_data.ranges[angle]
+
+    def get_min_distance(self):
+        """Минимальное расстояние до препятствия"""
+        if not self.scan_data:
+            return float('inf')
+
+        valid_ranges = [
+            r for r in self.scan_data.ranges
+            if not math.isinf(r) and not math.isnan(r) and r > 0
+        ]
+
+        if valid_ranges:
+            return min(valid_ranges)
+        return float('inf')
+    
+
+    def get_sector_data(self, start_angle, end_angle):
+        """
+        Получить все данные лидара в секторе [start_angle, end_angle]
+        """
+        if not self.scan_data:
+            return []
+
+        num_readings = len(self.scan_data.ranges)
+        angle_increment = math.degrees(self.scan_data.angle_increment)
+        result = []
+
+        start = start_angle % 360
+        end = end_angle % 360
+
+        for i in range(num_readings):
+            raw_angle = i * angle_increment
+            angle_deg = 360 - abs(raw_angle + 180)
+            angle_deg = angle_deg % 360
+
+            if start <= end:
+                in_sector = start <= angle_deg <= end
+            else:
+                in_sector = angle_deg >= start or angle_deg <= end
+
+            if in_sector:
+                distance = self.scan_data.ranges[i]
+                if not math.isinf(distance) and not math.isnan(distance):
+                    result.append((angle_deg, distance))
+
+        result.sort(key=lambda x: x[0])
+        return result
+    
+
+    def get_sector_xy(self, start_angle, end_angle):
+        """
+        Получить все данные лидара в секторе [start_angle, end_angle]
+        """
+        if not self.scan_data:
+            return []
+
+        num_readings = len(self.scan_data.ranges)
+        angle_increment = math.degrees(self.scan_data.angle_increment)
+
+        start = start_angle % 360
+        end = end_angle % 360
+
+        xs, ys = [], []
+
+        for i in range(num_readings):
+            raw_angle = i * angle_increment
+            angle_deg = 360 - abs(raw_angle + 180)
+            angle_deg = angle_deg % 360
+
+            if start <= end:
+                in_sector = start <= angle_deg <= end
+            else:
+                in_sector = angle_deg >= start or angle_deg <= end
+
+            if in_sector:
+                distance = self.scan_data.ranges[i]
+                if not math.isinf(distance) and not math.isnan(distance):
+                    xs.append(distance * math.cos(math.radians(angle_deg)))
+                    ys.append(distance * math.sin(math.radians(angle_deg)))
+
+        return xs, ys
+    
+
+    def get_object_angle_distance(self):
+        """
+        Определение угла и расстояния до ближайшего объекта
+        Возвращает: (angle_deg, distance) - угол в градусах и расстояние в метрах
+        angle_deg: 0 - спереди, 90 - слева, -90/270 - справа, 180 - сзади
+        """
+        if not self.scan_data:
+            return (None, float('inf'))
+
+        ranges = self.scan_data.ranges
+        min_distance = float('inf')
+        min_index = 0
+
+        for i, r in enumerate(ranges):
+            if not math.isinf(r) and not math.isnan(r) and r > 0:
+                if r < min_distance:
+                    min_distance = r
+                    min_index = i
+
+        if min_distance == float('inf'):
+            return (None, float('inf'))
+
+        angle_increment = math.degrees(self.scan_data.angle_increment)
+        angle_deg = min_index * angle_increment
+        angle_deg = 360 - abs(angle_deg + 180)
+
+        return (angle_deg, min_distance)
+    
+
+    def get_object_position(self):
+        """
+        Получить позицию ближайшего объекта в глобальных координатах
+        Возвращает: (x, y, distance, angle_deg) или (None, None, None, None) если объект не найден
+        """
+        angle_deg, distance = self.get_object_angle_distance()
+
+        if angle_deg is None:
+            return (None, None, None, None)
+
+        robot_x, robot_y = self.get_position()
+        robot_yaw = math.radians(self.get_angle())
+
+        object_angle_global = robot_yaw + math.radians(angle_deg)
+
+        object_x = robot_x + distance * math.cos(object_angle_global)
+        object_y = robot_y + distance * math.sin(object_angle_global)
+
+        return (object_x, object_y, distance, angle_deg)
+    
+
+    def get_objects_positions(self, distance_threshold=0.3, min_cluster_size=3, max_distance=3.5):
+        """
+        Получить позиции всех объектов в глобальных координатах
+        """
+        if not self.scan_data:
+            return []
+
+        ranges = list(self.scan_data.ranges)
+        angle_increment = math.degrees(self.scan_data.angle_increment)
+
+        points = []
+        for i, r in enumerate(ranges):
+            if not math.isinf(r) and not math.isnan(r) and 0 < r < max_distance:
+                points.append((i, r))
+
+        if not points:
+            return []
+
+        clusters = []
+        current_cluster = [points[0]]
+
+        for i in range(1, len(points)):
+            prev_idx, prev_r = points[i-1]
+            curr_idx, curr_r = points[i]
+
+            idx_gap = (curr_idx - prev_idx) > 5
+            dist_gap = abs(curr_r - prev_r) > distance_threshold
+
+            if idx_gap or dist_gap:
+                if len(current_cluster) >= min_cluster_size:
+                    clusters.append(current_cluster)
+                current_cluster = []
+
+            current_cluster.append((curr_idx, curr_r))
+
+        if len(current_cluster) >= min_cluster_size:
+            clusters.append(current_cluster)
+
+        robot_x, robot_y = self.get_position()
+        robot_yaw = math.radians(self.get_angle())
+        objects = []
+
+        for cluster in clusters:
+            min_point = min(cluster, key=lambda p: p[1])
+            center_idx, min_dist = min_point
+
+            angle_deg = center_idx * angle_increment
+            angle_deg = 360 - abs(angle_deg + 180)
+
+            object_angle_global = robot_yaw + math.radians(angle_deg)
+            object_x = robot_x + min_dist * math.cos(object_angle_global)
+            object_y = robot_y + min_dist * math.sin(object_angle_global)
+
+            objects.append((object_x, object_y, min_dist, angle_deg))
+
+        objects.sort(key=lambda obj: obj[2])
+
+        return objects
     
     
     def get_mask(self, frame, color='blue'):
