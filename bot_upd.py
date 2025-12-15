@@ -159,7 +159,6 @@ class Bot():
                 break
 
             self.move_motors_speed(left_speed, right_speed)
-            # self.rate.sleep()
 
         self.stop()
 
