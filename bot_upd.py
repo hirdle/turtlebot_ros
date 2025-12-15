@@ -402,4 +402,4 @@ class Bot():
 b = Bot()
 b.wait(1500)
 # b.send_goal(-1.5,1.5,90)
-print(b.get_distance_at_angle(0))
+print(b.get_object_angle_distance())
