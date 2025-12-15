@@ -121,15 +121,6 @@ actionlib
 - если внутри и distance валиден (не inf/NaN), добавляем (angle_deg, distance) в список
 5. сортируем result по angle_deg и возвращаем
 
-## Функция get_sector_xy
-1. если нет scan_data, вернуть []
-2. шаг угла = degrees(angle_increment); start/end нормализуем по 360
-3. проходим все лучи:
-- angle_deg = (360 - abs(i*step + 180)) % 360
-- проверяем попадание в сектор (как выше)
-- если валидное расстояние, считаем x = r * cos(rad(angle_deg)), y = r * sin(rad(angle_deg)), добавляем в списки
-4. возвращаем списки xs, ys
-
 ## Функция get_object_angle_distance
 1. если нет scan_data, вернуть (None, inf)
 2. пройти ranges, игнорируя inf/NaN/<=0, найти минимум и его индекс

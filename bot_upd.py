@@ -28,7 +28,7 @@ class Bot():
         rospy.Subscriber('/camera/rgb/image_raw', Image, self.set_image)
 
         self.client = actionlib.SimpleActionClient("/move_base", MoveBaseAction)
-        self.client.wait_for_server()
+        # self.client.wait_for_server()
         
         self.rate = rospy.Rate(100)
 
@@ -159,7 +159,7 @@ class Bot():
                 break
 
             self.move_motors_speed(left_speed, right_speed)
-            self.rate.sleep()
+            # self.rate.sleep()
 
         self.stop()
 
@@ -219,40 +219,6 @@ class Bot():
 
         result.sort(key=lambda x: x[0])
         return result
-    
-
-    def get_sector_xy(self, start_angle, end_angle):
-        """
-        Получить все данные лидара в секторе [start_angle, end_angle]
-        """
-        if not self.scan_data:
-            return []
-
-        num_readings = len(self.scan_data.ranges)
-        angle_increment = math.degrees(self.scan_data.angle_increment)
-
-        start = start_angle % 360
-        end = end_angle % 360
-
-        xs, ys = [], []
-
-        for i in range(num_readings):
-            raw_angle = i * angle_increment
-            angle_deg = 360 - abs(raw_angle + 180)
-            angle_deg = angle_deg % 360
-
-            if start <= end:
-                in_sector = start <= angle_deg <= end
-            else:
-                in_sector = angle_deg >= start or angle_deg <= end
-
-            if in_sector:
-                distance = self.scan_data.ranges[i]
-                if not math.isinf(distance) and not math.isnan(distance):
-                    xs.append(distance * math.cos(math.radians(angle_deg)))
-                    ys.append(distance * math.sin(math.radians(angle_deg)))
-
-        return xs, ys
     
 
     def get_object_angle_distance(self):
@@ -435,4 +401,5 @@ class Bot():
 
 b = Bot()
 b.wait(1500)
-b.send_goal(-1.5,1.5,90)
+# b.send_goal(-1.5,1.5,90)
+print(b.get_distance_at_angle(0))
