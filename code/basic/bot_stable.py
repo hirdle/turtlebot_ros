@@ -402,4 +402,3 @@ b = Bot()
 b.wait(1500)
 
 # ----- CODE -----
-print(b.get_min_distance())
