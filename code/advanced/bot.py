@@ -723,15 +723,8 @@ if __name__ == '__main__':
         bot = BotController()
         rospy.loginfo("BotController initialized")
         bot.wait(1000)
-        # if not bot.wait_for_hardware():
-        #     sys.exit(0)
-        # bot.follow_object()
-        # bot.turn_right()
-        bot.send_goal(1,1)
         
-        # print(bot.get_sector_data(10, 50))
-        # print(bot.get_min_distance())
-        # bot.follow_wall(duration=1000, side='left', target_distance=0.2)
+        # ----- CODE -----
  
     except rospy.ROSInterruptException:
         pass
