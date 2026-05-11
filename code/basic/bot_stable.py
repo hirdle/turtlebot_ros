@@ -67,7 +67,7 @@ class Bot():
             self.current_image = CvBridge().imgmsg_to_cv2(msg, 'bgr8')
 
         except:
-            print('Cameratarget_angle error')
+            print('Camera error')
 
     def get_position(self):
         x = self.odom_data.pose.pose.position.x
@@ -402,3 +402,4 @@ b = Bot()
 b.wait(1500)
 
 # ----- CODE -----
+print(b.get_min_distance())
